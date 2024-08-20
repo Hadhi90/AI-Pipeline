@@ -237,7 +237,7 @@
   },
   {
    "cell_type": "code",
-   "execution_count": null,
+   "execution_count": None,
    "id": "a25c940f",
    "metadata": {},
    "outputs": [],
