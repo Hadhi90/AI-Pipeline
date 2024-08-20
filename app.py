@@ -1,268 +1,228 @@
-{
- "cells": [
-  {
-   "cell_type": "code",
-   "execution_count": 3,
-   "id": "64cec690",
-   "metadata": {},
-   "outputs": [],
-   "source": [
-    "import streamlit as st\n",
-    "from PIL import Image\n",
-    "import os\n",
-    "import json\n",
-    "import cv2\n",
-    "import matplotlib.pyplot as plt\n",
-    "import numpy as np\n",
-    "import uuid\n",
-    "import pandas as pd\n",
-    "import torch\n",
-    "from torchvision import models, transforms\n",
-    "from transformers import pipeline\n",
-    "\n",
-    "# Define paths\n",
-    "input_image_path = \"project_root/data/input_images/sample.jpg\"\n",
-    "segmented_objects_dir = \"project_root/data/segmented_objects/\"\n",
-    "output_dir = \"project_root/data/output/\"\n",
-    "\n",
-    "# Streamlit UI setup\n",
-    "st.title(\"AI Pipeline for Image Segmentation and Object Analysis\")\n",
-    "\n",
-    "# File upload\n",
-    "uploaded_file = st.file_uploader(\"Choose an image...\", type=\"jpg\")\n",
-    "\n",
-    "if uploaded_file:\n",
-    "    # Display uploaded image\n",
-    "    image = Image.open(uploaded_file)\n",
-    "    st.image(image, caption='Uploaded Image', use_column_width=True)\n",
-    "\n",
-    "    # Save uploaded image\n",
-    "    uploaded_image_path = os.path.join(input_image_path)\n",
-    "    image.save(uploaded_image_path)\n",
-    "    \n",
-    "    st.write(\"Image uploaded successfully!\")\n",
-    "\n",
-    "    # Step 1: Image Segmentation\n",
-    "    st.write(\"Processing image...\")\n",
-    "\n",
-    "    # Import your segmentation code here\n",
-    "    model = models.detection.maskrcnn_resnet50_fpn(pretrained=True)\n",
-    "    model.eval()\n",
-    "\n",
-    "    transform = transforms.Compose([\n",
-    "        transforms.ToTensor()\n",
-    "    ])\n",
-    "\n",
-    "    image_tensor = transform(image).unsqueeze(0)\n",
-    "\n",
-    "    with torch.no_grad():\n",
-    "        predictions = model(image_tensor)\n",
-    "\n",
-    "    masks = predictions[0]['masks'].numpy()\n",
-    "    boxes = predictions[0]['boxes'].numpy()\n",
-    "\n",
-    "    # Visualization\n",
-    "    image_np = cv2.cvtColor(np.array(image), cv2.COLOR_RGB2BGR)\n",
-    "    for i in range(len(masks)):\n",
-    "        mask = masks[i, 0]\n",
-    "        image_np[mask > 0.5] = [0, 255, 0]\n",
-    "\n",
-    "    st.image(cv2.cvtColor(image_np, cv2.COLOR_BGR2RGB), caption='Segmented Image', use_column_width=True)\n",
-    "\n",
-    "    # Save segmented objects\n",
-    "    os.makedirs(segmented_objects_dir, exist_ok=True)\n",
-    "    master_id = str(uuid.uuid4())\n",
-    "    metadata = {\"master_id\": master_id, \"objects\": []}\n",
-    "\n",
-    "    for i, (mask, box) in enumerate(zip(masks, boxes)):\n",
-    "        unique_id = str(uuid.uuid4())\n",
-    "        x_min, y_min, x_max, y_max = map(int, box)\n",
-    "        object_img = image_np[y_min:y_max, x_min:x_max]\n",
-    "        object_mask = mask[y_min:y_max, x_min:x_max]\n",
-    "        object_img = cv2.bitwise_and(object_img, object_img, mask=(object_mask > 0.5).astype(\"uint8\"))\n",
-    "        object_filename = f\"{unique_id}.png\"\n",
-    "        cv2.imwrite(os.path.join(segmented_objects_dir, object_filename), object_img)\n",
-    "        metadata[\"objects\"].append({\n",
-    "            \"unique_id\": unique_id,\n",
-    "            \"file_name\": object_filename,\n",
-    "            \"bounding_box\": [x_min, y_min, x_max, y_max]\n",
-    "        })\n",
-    "\n",
-    "    # Save metadata\n",
-    "    metadata_path = os.path.join(segmented_objects_dir, f\"{master_id}_metadata.json\")\n",
-    "    with open(metadata_path, \"w\") as f:\n",
-    "        json.dump(metadata, f, indent=4)\n",
-    "    \n",
-    "    st.write(\"Image segmentation completed.\")\n",
-    "\n",
-    "    # Step 2: Object Identification\n",
-    "    st.write(\"Identifying objects...\")\n",
-    "\n",
-    "    model = models.detection.fasterrcnn_resnet50_fpn(pretrained=True)\n",
-    "    model.eval()\n",
-    "\n",
-    "    transform = transforms.Compose([\n",
-    "        transforms.ToTensor()\n",
-    "    ])\n",
-    "\n",
-    "    with open(metadata_path, \"r\") as f:\n",
-    "        metadata = json.load(f)\n",
-    "\n",
-    "    for obj in metadata['objects']:\n",
-    "        object_img_path = os.path.join(segmented_objects_dir, obj['file_name'])\n",
-    "        image = Image.open(object_img_path)\n",
-    "        image_tensor = transform(image).unsqueeze(0)\n",
-    "\n",
-    "        with torch.no_grad():\n",
-    "            predictions = model(image_tensor)\n",
-    "\n",
-    "        labels = predictions[0]['labels'].numpy()\n",
-    "        scores = predictions[0]['scores'].numpy()\n",
-    "        label_idx = scores.argmax()\n",
-    "        obj_label = labels[label_idx]\n",
-    "        obj_confidence = scores[label_idx]\n",
-    "        obj['label'] = str(obj_label)\n",
-    "        obj['confidence'] = float(obj_confidence)\n",
-    "\n",
-    "    with open(metadata_path, \"w\") as f:\n",
-    "        json.dump(metadata, f, indent=4)\n",
-    "\n",
-    "    st.write(\"Object identification completed.\")\n",
-    "\n",
-    "    # Step 3: Text/Data Extraction\n",
-    "    st.write(\"Extracting text/data...\")\n",
-    "\n",
-    "    import pytesseract\n",
-    "    import easyocr\n",
-    "    \n",
-    "    pytesseract.pytesseract.tesseract_cmd = r'C:\\Program Files\\Tesseract-OCR\\tesseract.exe'\n",
-    "    USE_TESSERACT = True\n",
-    "\n",
-    "    if USE_TESSERACT:\n",
-    "        pass\n",
-    "    else:\n",
-    "        reader = easyocr.Reader(['en'])\n",
-    "\n",
-    "    for obj in metadata['objects']:\n",
-    "        object_img_path = os.path.join(segmented_objects_dir, obj['file_name'])\n",
-    "        image = cv2.imread(object_img_path)\n",
-    "        if USE_TESSERACT:\n",
-    "            extracted_text = pytesseract.image_to_string(image)\n",
-    "        else:\n",
-    "            extracted_text = reader.readtext(image, detail=0)\n",
-    "        obj['extracted_text'] = extracted_text\n",
-    "\n",
-    "    with open(metadata_path, \"w\") as f:\n",
-    "        json.dump(metadata, f, indent=4)\n",
-    "\n",
-    "    st.write(\"Text extraction completed.\")\n",
-    "\n",
-    "    # Step 4: Summarize Attributes\n",
-    "    st.write(\"Summarizing attributes...\")\n",
-    "\n",
-    "    summarizer = pipeline(\"summarization\")\n",
-    "\n",
-    "    for obj in metadata['objects']:\n",
-    "        if 'extracted_text' in obj and obj['extracted_text']:\n",
-    "            text = obj['extracted_text']\n",
-    "            summary = summarizer(text, max_length=150, min_length=30, do_sample=False)\n",
-    "            obj['summary'] = summary[0]['summary_text']\n",
-    "        else:\n",
-    "            obj['summary'] = \"No text extracted\"\n",
-    "\n",
-    "    with open(metadata_path, \"w\") as f:\n",
-    "        json.dump(metadata, f, indent=4)\n",
-    "\n",
-    "    st.write(\"Summarization completed.\")\n",
-    "\n",
-    "    # Step 5: Data Mapping\n",
-    "    st.write(\"Mapping data...\")\n",
-    "\n",
-    "    mapped_data = {\"master_image\": {\"file_name\": uploaded_file.name, \"objects\": []}}\n",
-    "\n",
-    "    for obj in metadata['objects']:\n",
-    "        mapped_data['master_image']['objects'].append({\n",
-    "            \"unique_id\": obj.get('unique_id', 'N/A'),\n",
-    "            \"file_name\": obj.get('file_name', 'N/A'),\n",
-    "            \"label\": obj.get('label', 'N/A'),\n",
-    "            \"confidence\": obj.get('confidence', 'N/A'),\n",
-    "            \"extracted_text\": obj.get('extracted_text', 'N/A'),\n",
-    "            \"summary\": obj.get('summary', 'N/A')\n",
-    "        })\n",
-    "\n",
-    "    mapped_data_path = os.path.join(output_dir, \"mapped_data.json\")\n",
-    "    with open(mapped_data_path, \"w\") as f:\n",
-    "        json.dump(mapped_data, f, indent=4)\n",
-    "\n",
-    "    st.write(\"Data mapping completed.\")\n",
-    "\n",
-    "    # Display the final output image with annotations\n",
-    "    st.write(\"Generating final output...\")\n",
-    "\n",
-    "    image = cv2.imread(input_image_path)\n",
-    "\n",
-    "    with open(mapped_data_path, \"r\") as f:\n",
-    "        mapped_data = json.load(f)\n",
-    "\n",
-    "    for obj in mapped_data['master_image']['objects']:\n",
-    "        unique_id = obj.get('unique_id', 'N/A')\n",
-    "        file_name = obj.get('file_name', 'N/A')\n",
-    "        x, y, w, h = 50, 50, 100, 100  # Replace with actual coordinates\n",
-    "        cv2.rectangle(image, (x, y), (x+w, y+h), (0, 255, 0), 2)\n",
-    "        label = f\"ID: {unique_id} | {file_name}\"\n",
-    "        cv2.putText(image, label, (x, y-10), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 255), 1, cv2.LINE_AA)\n",
-    "\n",
-    "    annotated_image_path = os.path.join(output_dir, \"annotated_image.jpg\")\n",
-    "    cv2.imwrite(annotated_image_path, image)\n",
-    "\n",
-    "    st.image(annotated_image_path, caption='Annotated Image', use_column_width=True)\n",
-    "\n",
-    "    # Display the summary table\n",
-    "    st.write(\"Summary Table:\")\n",
-    "\n",
-    "    data = []\n",
-    "    for obj in mapped_data['master_image']['objects']:\n",
-    "        data.append({\n",
-    "            \"Unique ID\": obj.get('unique_id', 'N/A'),\n",
-    "            \"File Name\": obj.get('file_name', 'N/A'),\n",
-    "            \"Label\": obj.get('label', 'N/A'),\n",
-    "            \"Confidence\": obj.get('confidence', 'N/A'),\n",
-    "            \"Extracted Text\": obj.get('extracted_text', 'N/A'),\n",
-    "            \"Summary\": obj.get('summary', 'N/A')\n",
-    "        })\n",
-    "\n",
-    "    df = pd.DataFrame(data)\n",
-    "    st.dataframe(df)\n"
-   ]
-  },
-  {
-   "cell_type": "code",
-   "execution_count": None,
-   "id": "166a8ff1",
-   "metadata": {},
-   "outputs": [],
-   "source": []
-  }
- ],
- "metadata": {
-  "kernelspec": {
-   "display_name": "Python 3 (ipykernel)",
-   "language": "python",
-   "name": "python3"
-  },
-  "language_info": {
-   "codemirror_mode": {
-    "name": "ipython",
-    "version": 3
-   },
-   "file_extension": ".py",
-   "mimetype": "text/x-python",
-   "name": "python",
-   "nbconvert_exporter": "python",
-   "pygments_lexer": "ipython3",
-   "version": "3.9.12"
-  }
- },
- "nbformat": 4,
- "nbformat_minor": 5
-}
+import streamlit as st
+from PIL import Image
+import os
+import json
+import cv2
+import matplotlib.pyplot as plt
+import numpy as np
+import uuid
+import pandas as pd
+import torch
+from torchvision import models, transforms
+from transformers import pipeline
+
+# Define paths
+input_image_path = "project_root/data/input_images/sample.jpg"
+segmented_objects_dir = "project_root/data/segmented_objects/"
+output_dir = "project_root/data/output/"
+
+# Streamlit UI setup
+st.title("AI Pipeline for Image Segmentation and Object Analysis")
+
+# File upload
+uploaded_file = st.file_uploader("Choose an image...", type="jpg")
+
+if uploaded_file:
+    # Display uploaded image
+    image = Image.open(uploaded_file)
+    st.image(image, caption='Uploaded Image', use_column_width=True)
+
+    # Save uploaded image
+    uploaded_image_path = os.path.join(input_image_path)
+    image.save(uploaded_image_path)
+    
+    st.write("Image uploaded successfully!")
+
+    # Step 1: Image Segmentation
+    st.write("Processing image...")
+
+    # Import your segmentation code here
+    model = models.detection.maskrcnn_resnet50_fpn(pretrained=True)
+    model.eval()
+
+    transform = transforms.Compose([
+        transforms.ToTensor()
+    ])
+
+    image_tensor = transform(image).unsqueeze(0)
+
+    with torch.no_grad():
+        predictions = model(image_tensor)
+
+    masks = predictions[0]['masks'].numpy()
+    boxes = predictions[0]['boxes'].numpy()
+
+    # Visualization
+    image_np = cv2.cvtColor(np.array(image), cv2.COLOR_RGB2BGR)
+    for i in range(len(masks)):
+        mask = masks[i, 0]
+        image_np[mask > 0.5] = [0, 255, 0]
+
+    st.image(cv2.cvtColor(image_np, cv2.COLOR_BGR2RGB), caption='Segmented Image', use_column_width=True)
+
+    # Save segmented objects
+    os.makedirs(segmented_objects_dir, exist_ok=True)
+    master_id = str(uuid.uuid4())
+    metadata = {"master_id": master_id, "objects": []}
+
+    for i, (mask, box) in enumerate(zip(masks, boxes)):
+        unique_id = str(uuid.uuid4())
+        x_min, y_min, x_max, y_max = map(int, box)
+        object_img = image_np[y_min:y_max, x_min:x_max]
+        object_mask = mask[y_min:y_max, x_min:x_max]
+        object_img = cv2.bitwise_and(object_img, object_img, mask=(object_mask > 0.5).astype("uint8"))
+        object_filename = f"{unique_id}.png"
+        cv2.imwrite(os.path.join(segmented_objects_dir, object_filename), object_img)
+        metadata["objects"].append({
+            "unique_id": unique_id,
+            "file_name": object_filename,
+            "bounding_box": [x_min, y_min, x_max, y_max]
+        })
+
+    # Save metadata
+    metadata_path = os.path.join(segmented_objects_dir, f"{master_id}_metadata.json")
+    with open(metadata_path, "w") as f:
+        json.dump(metadata, f, indent=4)
+    
+    st.write("Image segmentation completed.")
+
+    # Step 2: Object Identification
+    st.write("Identifying objects...")
+
+    model = models.detection.fasterrcnn_resnet50_fpn(pretrained=True)
+    model.eval()
+
+    transform = transforms.Compose([
+        transforms.ToTensor()
+    ])
+
+    with open(metadata_path, "r") as f:
+        metadata = json.load(f)
+
+    for obj in metadata['objects']:
+        object_img_path = os.path.join(segmented_objects_dir, obj['file_name'])
+        image = Image.open(object_img_path)
+        image_tensor = transform(image).unsqueeze(0)
+
+        with torch.no_grad():
+            predictions = model(image_tensor)
+
+        labels = predictions[0]['labels'].numpy()
+        scores = predictions[0]['scores'].numpy()
+        label_idx = scores.argmax()
+        obj_label = labels[label_idx]
+        obj_confidence = scores[label_idx]
+        obj['label'] = str(obj_label)
+        obj['confidence'] = float(obj_confidence)
+
+    with open(metadata_path, "w") as f:
+        json.dump(metadata, f, indent=4)
+
+    st.write("Object identification completed.")
+
+    # Step 3: Text/Data Extraction
+    st.write("Extracting text/data...")
+
+    import pytesseract
+    import easyocr
+    
+    pytesseract.pytesseract.tesseract_cmd = r'C:\Program Files\Tesseract-OCR\tesseract.exe'
+    USE_TESSERACT = True
+
+    if USE_TESSERACT:
+        pass
+    else:
+        reader = easyocr.Reader(['en'])
+
+    for obj in metadata['objects']:
+        object_img_path = os.path.join(segmented_objects_dir, obj['file_name'])
+        image = cv2.imread(object_img_path)
+        if USE_TESSERACT:
+            extracted_text = pytesseract.image_to_string(image)
+        else:
+            extracted_text = reader.readtext(image, detail=0)
+        obj['extracted_text'] = extracted_text
+
+    with open(metadata_path, "w") as f:
+        json.dump(metadata, f, indent=4)
+
+    st.write("Text extraction completed.")
+
+    # Step 4: Summarize Attributes
+    st.write("Summarizing attributes...")
+
+    summarizer = pipeline("summarization")
+
+    for obj in metadata['objects']:
+        if 'extracted_text' in obj and obj['extracted_text']:
+            text = obj['extracted_text']
+            summary = summarizer(text, max_length=150, min_length=30, do_sample=False)
+            obj['summary'] = summary[0]['summary_text']
+        else:
+            obj['summary'] = "No text extracted"
+
+    with open(metadata_path, "w") as f:
+        json.dump(metadata, f, indent=4)
+
+    st.write("Summarization completed.")
+
+    # Step 5: Data Mapping
+    st.write("Mapping data...")
+
+    mapped_data = {"master_image": {"file_name": uploaded_file.name, "objects": []}}
+
+    for obj in metadata['objects']:
+        mapped_data['master_image']['objects'].append({
+            "unique_id": obj.get('unique_id', 'N/A'),
+            "file_name": obj.get('file_name', 'N/A'),
+            "label": obj.get('label', 'N/A'),
+            "confidence": obj.get('confidence', 'N/A'),
+            "extracted_text": obj.get('extracted_text', 'N/A'),
+            "summary": obj.get('summary', 'N/A')
+        })
+
+    mapped_data_path = os.path.join(output_dir, "mapped_data.json")
+    with open(mapped_data_path, "w") as f:
+        json.dump(mapped_data, f, indent=4)
+
+    st.write("Data mapping completed.")
+
+    # Display the final output image with annotations
+    st.write("Generating final output...")
+
+    image = cv2.imread(input_image_path)
+
+    with open(mapped_data_path, "r") as f:
+        mapped_data = json.load(f)
+
+    for obj in mapped_data['master_image']['objects']:
+        unique_id = obj.get('unique_id', 'N/A')
+        file_name = obj.get('file_name', 'N/A')
+        x, y, w, h = 50, 50, 100, 100  # Replace with actual coordinates
+        cv2.rectangle(image, (x, y), (x+w, y+h), (0, 255, 0), 2)
+        label = f"ID: {unique_id} | {file_name}"
+        cv2.putText(image, label, (x, y-10), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 255), 1, cv2.LINE_AA)
+
+    annotated_image_path = os.path.join(output_dir, "annotated_image.jpg")
+    cv2.imwrite(annotated_image_path, image)
+
+    st.image(annotated_image_path, caption='Annotated Image', use_column_width=True)
+
+    # Display the summary table
+    st.write("Summary Table:")
+
+    data = []
+    for obj in mapped_data['master_image']['objects']:
+        data.append({
+            "Unique ID": obj.get('unique_id', 'N/A'),
+            "File Name": obj.get('file_name', 'N/A'),
+            "Label": obj.get('label', 'N/A'),
+            "Confidence": obj.get('confidence', 'N/A'),
+            "Extracted Text": obj.get('extracted_text', 'N/A'),
+            "Summary": obj.get('summary', 'N/A')
+        })
+
+    df = pd.DataFrame(data)
+    st.dataframe(df)
+
+
